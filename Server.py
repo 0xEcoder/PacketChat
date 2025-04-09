@@ -1,4 +1,5 @@
 import socket
+import sys
 
 BUFFER_SIZE = 1024
 MAX_CLIENTS = 100
@@ -29,6 +30,10 @@ def broadcast_message(sockfd, message, sender_addr):
             print(f"Message sent to client {client[0]}:{client[1]}")
         except Exception as e:
             print(f"Failed to send message to client {client[0]}:{client[1]}: {e}")
+            # Remove dead clients
+            if sys.platform == 'win32' and isinstance(e, socket.error) and e.winerror == 10054:
+                print(f"Removing disconnected client: {client[0]}:{client[1]}")
+                clients.remove(client)
 
 
 def main():
@@ -36,6 +41,10 @@ def main():
     try:
         # Create UDP socket
         sockfd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Set socket options for better behavior
+        sockfd.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if sys.platform != 'win32':
+            sockfd.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         sockfd.bind(('', SERVER_PORT))  # Bind to all available interfaces
         print(f"Server is running and listening on port {SERVER_PORT}...")
     except socket.error as e:
@@ -46,6 +55,9 @@ def main():
     try:
         while True:
             try:
+                # Set timeout for recvfrom to make KeyboardInterrupt responsive
+                sockfd.settimeout(1.0)
+                
                 # Receive a message from a client
                 message, client_addr = sockfd.recvfrom(BUFFER_SIZE)
                 message = message.decode('utf-8')  # Decode the received message
@@ -56,12 +68,23 @@ def main():
 
                 # Broadcast the message to all clients except the sender
                 broadcast_message(sockfd, message, client_addr)
+                
+            except socket.timeout:
+                continue  # Timeout is normal, just check for KeyboardInterrupt
+            except socket.error as e:
+                if sys.platform == 'win32' and hasattr(e, 'winerror') and e.winerror == 10054:
+                    print("Client forcibly closed connection (UDP - can be ignored)")
+                    continue
+                print(f"Socket error: {e}")
             except Exception as e:
-                print(f"Error receiving or processing message: {e}")
+                print(f"Error processing message: {e}")
+                
     except KeyboardInterrupt:
         print("\nServer shutting down...")
     finally:
+        # Clean up
         sockfd.close()
+        print("Server socket closed.")
 
 
 if __name__ == "__main__":
